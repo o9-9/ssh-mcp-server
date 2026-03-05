@@ -12,6 +12,7 @@ export interface SSHConfig {
   commandWhitelist?: string[]; // Command whitelist (array of regex strings)
   commandBlacklist?: string[]; // Command blacklist (array of regex strings)
   socksProxy?: string; // SOCKS proxy URL, e.g. 'socks://user:pass@host:port'
+  pty?: boolean; // Allocate pseudo-tty for command execution, default: true
 }
 
 /**

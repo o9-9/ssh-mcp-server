@@ -26,6 +26,7 @@ export class CommandLineParser {
         whitelist: { type: "string", short: "W" },
         blacklist: { type: "string", short: "B" },
         socksProxy: { type: "string", short: "s" },
+        pty: { type: "boolean" },
         "pre-connect": { type: "boolean" },
       },
       allowPositionals: true,
@@ -114,6 +115,7 @@ export class CommandLineParser {
       const passphrase = values.passphrase;
       const whitelist = values.whitelist;
       const blacklist = values.blacklist;
+      const pty = values.pty;
 
       if (!host || !portStr || !username || (!password && !privateKey)) {
         throw new Error(
@@ -135,6 +137,7 @@ export class CommandLineParser {
         privateKey,
         passphrase,
         socksProxy: values.socksProxy,
+        pty: pty !== undefined ? pty : undefined,
         commandWhitelist: whitelist
           ? whitelist
               .split(",")
@@ -192,6 +195,7 @@ export class CommandLineParser {
       privateKey: conf.privateKey,
       passphrase: conf.passphrase,
       socksProxy: conf.socksProxy,
+      pty: conf.pty !== undefined ? conf.pty === "true" || conf.pty === true : undefined,
       commandWhitelist: conf.whitelist
         ? conf.whitelist
             .split("|")
@@ -229,6 +233,7 @@ export class CommandLineParser {
       privateKey: config.privateKey,
       passphrase: config.passphrase,
       socksProxy: config.socksProxy,
+      pty: config.pty !== undefined ? Boolean(config.pty) : undefined,
       commandWhitelist: Array.isArray(config.commandWhitelist)
         ? config.commandWhitelist
         : config.whitelist
