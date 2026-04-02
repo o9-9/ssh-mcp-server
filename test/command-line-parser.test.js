@@ -240,6 +240,26 @@ Host testhost
       assert.strictEqual(result.configs.default.pty, true);
     });
 
+    it('应该正确解析配置文件中的字符串 false pty', () => {
+      const ptyConfigPath = path.join(__dirname, 'fixtures', 'pty-config.json');
+      fs.writeFileSync(ptyConfigPath, JSON.stringify({
+        dev: {
+          host: '192.168.1.100',
+          port: 22,
+          username: 'devuser',
+          password: 'devpass',
+          pty: 'false'
+        }
+      }));
+
+      process.argv = ['node', 'test', '--config-file', ptyConfigPath];
+      const result = CommandLineParser.parseArgs();
+
+      assert.strictEqual(result.configs.dev.pty, false);
+
+      fs.unlinkSync(ptyConfigPath);
+    });
+
     it('应该正确解析 --pre-connect 选项', () => {
       process.argv = ['node', 'test', '--host', '1.2.3.4', '--port', '22', '--username', 'user', '--password', 'pass', '--pre-connect'];
       const result = CommandLineParser.parseArgs();
@@ -252,6 +272,15 @@ Host testhost
       const result = CommandLineParser.parseArgs();
 
       assert.strictEqual(result.configs.default.socksProxy, 'socks://proxy:1080');
+    });
+
+    it('应该正确解析 allowed local paths', () => {
+      process.argv = ['node', 'test', '--host', '1.2.3.4', '--port', '22', '--username', 'user', '--password', 'pass', '--allowed-local-paths', './tmp,../ssh-mcp-server/test'];
+      const result = CommandLineParser.parseArgs();
+
+      assert.ok(Array.isArray(result.configs.default.allowedLocalPaths));
+      assert.strictEqual(result.configs.default.allowedLocalPaths.length, 2);
+      assert.ok(result.configs.default.allowedLocalPaths.every((entry) => entry.startsWith('/')));
     });
   });
 

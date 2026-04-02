@@ -58,6 +58,7 @@ NPM: [https://www.npmjs.com/package/@fangjunjie/ssh-mcp-server](https://www.npmj
   -W, --whitelist     命令白名单，以逗号分隔的正则表达式
   -B, --blacklist     命令黑名单,以逗号分隔的正则表达式
   -s, --socksProxy    SOCKS 代理地址 (e.g., socks://user:password@host:port)
+  --allowed-local-paths upload/download 允许访问的额外本地路径，逗号分隔
   --pty               为命令执行分配伪终端 (默认: true)
   --pre-connect       启动时预连接所有配置的 SSH 服务器
 ```
@@ -374,6 +375,7 @@ npx @fangjunjie/ssh-mcp-server \
 `execute-command` 工具支持超时选项，防止命令无限期挂起：
 
 - **timeout**: 命令执行超时时间（毫秒，可选，默认为30000ms）
+- 错误响应现在包含稳定的 `code`、`message`、`retriable` 字段，便于上层 Agent 处理
 
 这对于像 `ping`、`tail -f` 或其他可能阻塞执行的长时间运行进程特别有用。
 
@@ -407,6 +409,7 @@ npx @fangjunjie/ssh-mcp-server \
 - **私钥安全**：服务器会将 SSH 私钥读入内存。请确保运行 `ssh-mcp-server` 的机器是安全的。不要将服务器暴露给不受信任的网络。
 - **拒绝服务攻击 (DoS)**：服务器没有内置的速率限制。攻击者可能通过向服务器发送大量连接请求或大文件传输来发起 DoS 攻击。建议在具有速率限制功能的防火墙或反向代理后面运行服务器。
 - **路径遍历**：服务器内置了对本地文件系统路径遍历攻击的保护。但是，仍然需要注意在 `upload` 和 `download` 命令中使用的路径。
+- **本地传输范围**：默认仅允许访问当前工作目录。只有在明确可信时，才建议通过 `--allowed-local-paths` 或配置文件中的 `allowedLocalPaths` 放宽范围。
 
 ## 🎮 演示
 

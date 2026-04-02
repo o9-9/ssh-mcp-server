@@ -15,6 +15,32 @@ export async function collectSystemStatus(
   };
 
   try {
+    const runCommandsWithConcurrencyLimit = async (
+      commands: string[],
+      limit: number,
+    ): Promise<string[]> => {
+      const results = new Array<string>(commands.length).fill("");
+      let nextIndex = 0;
+
+      const worker = async (): Promise<void> => {
+        while (nextIndex < commands.length) {
+          const currentIndex = nextIndex++;
+          try {
+            results[currentIndex] = await execCommand(commands[currentIndex]);
+          } catch {
+            results[currentIndex] = "";
+          }
+        }
+      };
+
+      const workerCount = Math.min(limit, commands.length);
+      await Promise.all(
+        Array.from({ length: workerCount }, async () => worker()),
+      );
+
+      return results;
+    };
+
     // Helper function to execute command and parse output
     const execCommand = (command: string): Promise<string> => {
       return new Promise((resolve, reject) => {
@@ -65,75 +91,78 @@ export async function collectSystemStatus(
     };
 
     // Execute commands and collect results
-    const results = await Promise.allSettled([
-      execCommand(commands.hostname).catch(() => ""),
-      execCommand(commands.ipAddresses).catch(() => ""),
-      execCommand(commands.osName).catch(() => ""),
-      execCommand(commands.osVersion).catch(() => ""),
-      execCommand(commands.kernelVersion).catch(() => ""),
-      execCommand(commands.uptime).catch(() => ""),
-      execCommand(commands.diskSpace).catch(() => ""),
-      execCommand(commands.memory).catch(() => ""),
-      execCommand(commands.cpuName).catch(() => ""),
-      execCommand(commands.cpuUsage).catch(() => ""),
-      execCommand(commands.gpus).catch(() => ""),
-      execCommand(commands.gpuPaths).catch(() => ""),
-      execCommand(commands.drives).catch(() => ""),
-      execCommand(commands.processes).catch(() => "0"),
-      execCommand(commands.threads).catch(() => "0"),
-      execCommand(commands.servicesRunning).catch(() => "0"),
-      execCommand(commands.servicesInstalled).catch(() => "0"),
-    ]);
+    const resultValues = await runCommandsWithConcurrencyLimit(
+      [
+        commands.hostname,
+        commands.ipAddresses,
+        commands.osName,
+        commands.osVersion,
+        commands.kernelVersion,
+        commands.uptime,
+        commands.diskSpace,
+        commands.memory,
+        commands.cpuName,
+        commands.cpuUsage,
+        commands.gpus,
+        commands.gpuPaths,
+        commands.drives,
+        commands.processes,
+        commands.threads,
+        commands.servicesRunning,
+        commands.servicesInstalled,
+      ],
+      3,
+    );
 
     // Parse results
     const [
-      hostnameResult,
-      ipAddressesResult,
-      osNameResult,
-      osVersionResult,
-      kernelVersionResult,
-      uptimeResult,
-      diskSpaceResult,
-      memoryResult,
-      cpuNameResult,
-      cpuUsageResult,
-      gpusResult,
-      gpuPathsResult,
-      drivesResult,
-      processesResult,
-      threadsResult,
-      servicesRunningResult,
-      servicesInstalledResult,
-    ] = results;
+      hostnameValue,
+      ipAddressesValue,
+      osNameValue,
+      osVersionValue,
+      kernelVersionValue,
+      uptimeValue,
+      diskSpaceValue,
+      memoryValue,
+      cpuNameValue,
+      cpuUsageValue,
+      gpusValue,
+      gpuPathsValue,
+      drivesValue,
+      processesValue,
+      threadsValue,
+      servicesRunningValue,
+      servicesInstalledValue,
+    ] = resultValues;
 
-    if (hostnameResult.status === "fulfilled" && hostnameResult.value) {
-      status.hostname = hostnameResult.value;
+    if (hostnameValue) {
+      status.hostname = hostnameValue;
     }
 
-    if (ipAddressesResult.status === "fulfilled" && ipAddressesResult.value) {
-      status.ipAddresses = ipAddressesResult.value
+    if (ipAddressesValue) {
+      status.ipAddresses = ipAddressesValue
         .split("\n")
         .filter((ip) => ip.trim() && !ip.includes("127.0.0.1"));
     }
 
-    if (osNameResult.status === "fulfilled" && osNameResult.value) {
-      status.osName = osNameResult.value;
+    if (osNameValue) {
+      status.osName = osNameValue;
     }
 
-    if (osVersionResult.status === "fulfilled" && osVersionResult.value) {
-      status.osVersion = osVersionResult.value;
+    if (osVersionValue) {
+      status.osVersion = osVersionValue;
     }
 
-    if (kernelVersionResult.status === "fulfilled" && kernelVersionResult.value) {
-      status.kernelVersion = kernelVersionResult.value;
+    if (kernelVersionValue) {
+      status.kernelVersion = kernelVersionValue;
     }
 
-    if (uptimeResult.status === "fulfilled" && uptimeResult.value) {
-      status.uptime = uptimeResult.value;
+    if (uptimeValue) {
+      status.uptime = uptimeValue;
     }
 
-    if (diskSpaceResult.status === "fulfilled" && diskSpaceResult.value) {
-      const diskMatch = diskSpaceResult.value.match(/free:(\S+)\s+total:(\S+)/);
+    if (diskSpaceValue) {
+      const diskMatch = diskSpaceValue.match(/free:(\S+)\s+total:(\S+)/);
       if (diskMatch) {
         status.diskSpace = {
           free: diskMatch[1],
@@ -142,8 +171,8 @@ export async function collectSystemStatus(
       }
     }
 
-    if (memoryResult.status === "fulfilled" && memoryResult.value) {
-      const memMatch = memoryResult.value.match(/free:(\S+)\s+total:(\S+)/);
+    if (memoryValue) {
+      const memMatch = memoryValue.match(/free:(\S+)\s+total:(\S+)/);
       if (memMatch) {
         status.memory = {
           free: memMatch[1],
@@ -153,30 +182,29 @@ export async function collectSystemStatus(
     }
 
     // Handle CPU name
-    if (cpuNameResult.status === "fulfilled" && cpuNameResult.value && cpuNameResult.value.trim()) {
+    if (cpuNameValue && cpuNameValue.trim()) {
       status.cpu = {
-        name: cpuNameResult.value.trim(),
+        name: cpuNameValue.trim(),
       };
     }
     
-    if (status.cpu && cpuUsageResult.status === "fulfilled" && cpuUsageResult.value && cpuUsageResult.value !== "N/A") {
-      status.cpu.usage = `${parseFloat(cpuUsageResult.value).toFixed(1)}%`;
+    if (status.cpu && cpuUsageValue && cpuUsageValue !== "N/A") {
+      status.cpu.usage = `${parseFloat(cpuUsageValue).toFixed(1)}%`;
     }
 
     // Handle GPUs
-    if (gpusResult.status === "fulfilled" && gpusResult.value && gpusResult.value.trim()) {
+    if (gpusValue && gpusValue.trim()) {
       const gpuPaths: string[] = [];
-      if (gpuPathsResult.status === "fulfilled" && gpuPathsResult.value) {
-        gpuPaths.push(...gpuPathsResult.value.split("\n").filter((p) => p.trim()));
+      if (gpuPathsValue) {
+        gpuPaths.push(...gpuPathsValue.split("\n").filter((p) => p.trim()));
       }
       
-      const gpuLines = gpusResult.value.split("\n").filter((line) => line.trim());
+      const gpuLines = gpusValue.split("\n").filter((line) => line.trim());
       const gpus: Array<{ name: string; usage?: string; path?: string }> = [];
       
       gpuLines.forEach((line, index) => {
         const parts = line.split("|");
         if (parts.length >= 2) {
-          const vendor = parts[0].trim();
           const name = parts[1].trim();
           const usage = parts[2]?.trim();
           
@@ -205,8 +233,8 @@ export async function collectSystemStatus(
     }
     
     // Handle drives
-    if (drivesResult.status === "fulfilled" && drivesResult.value && drivesResult.value.trim()) {
-      const driveLines = drivesResult.value.split("\n").filter((line) => line.trim());
+    if (drivesValue && drivesValue.trim()) {
+      const driveLines = drivesValue.split("\n").filter((line) => line.trim());
       const drives: Array<{
         device: string;
         mountPoint: string;
@@ -245,18 +273,18 @@ export async function collectSystemStatus(
       }
     }
 
-    if (processesResult.status === "fulfilled" && threadsResult.status === "fulfilled") {
-      const processCount = parseInt(processesResult.value, 10) - 1; // Subtract header line
-      const threadCount = parseInt(threadsResult.value, 10) - 1; // Subtract header line
+    if (processesValue || threadsValue) {
+      const processCount = parseInt(processesValue || "0", 10) - 1; // Subtract header line
+      const threadCount = parseInt(threadsValue || "0", 10) - 1; // Subtract header line
       status.processes = {
         running: Math.max(0, processCount),
         threads: Math.max(0, threadCount),
       };
     }
 
-    if (servicesRunningResult.status === "fulfilled" && servicesInstalledResult.status === "fulfilled") {
-      const runningCount = parseInt(servicesRunningResult.value, 10) - 1; // Subtract header line
-      const installedCount = parseInt(servicesInstalledResult.value, 10) - 1; // Subtract header line
+    if (servicesRunningValue || servicesInstalledValue) {
+      const runningCount = parseInt(servicesRunningValue || "0", 10) - 1; // Subtract header line
+      const installedCount = parseInt(servicesInstalledValue || "0", 10) - 1; // Subtract header line
       status.services = {
         running: Math.max(0, runningCount),
         installed: Math.max(0, installedCount),

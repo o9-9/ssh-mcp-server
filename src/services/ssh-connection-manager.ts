@@ -7,6 +7,7 @@ import {
 } from "../models/types.js";
 import { Logger } from "../utils/logger.js";
 import { collectSystemStatus } from "../utils/status-collector.js";
+import { ToolError } from "../utils/tool-error.js";
 import fs from "fs";
 import path from "path";
 import { SFTPWrapper } from "ssh2";
@@ -20,6 +21,10 @@ export class SSHConnectionManager {
   private configs: SshConnectionConfigMap = {};
   private connected: Map<string, boolean> = new Map();
   private statusCache: Map<string, ServerStatus> = new Map();
+  private pendingConnections: Map<string, Promise<void>> = new Map();
+  private pendingStatusCollections: Map<string, NodeJS.Timeout> = new Map();
+  private commandWhitelistRegexes: Map<string, RegExp[]> = new Map();
+  private commandBlacklistRegexes: Map<string, RegExp[]> = new Map();
   private defaultName: string = "default";
 
   private constructor() {}
@@ -41,6 +46,22 @@ export class SSHConnectionManager {
     configs: SshConnectionConfigMap,
     defaultName?: string,
   ): void {
+    this.disconnect();
+
+    this.commandWhitelistRegexes.clear();
+    this.commandBlacklistRegexes.clear();
+
+    for (const [name, config] of Object.entries(configs)) {
+      this.commandWhitelistRegexes.set(
+        name,
+        this.compilePatterns(config.commandWhitelist, name, "whitelist"),
+      );
+      this.commandBlacklistRegexes.set(
+        name,
+        this.compilePatterns(config.commandBlacklist, name, "blacklist"),
+      );
+    }
+
     this.configs = configs;
     if (defaultName && configs[defaultName]) {
       this.defaultName = defaultName;
@@ -78,9 +99,14 @@ export class SSHConnectionManager {
     if (this.connected.get(key) && this.clients.get(key)) {
       return;
     }
+    const existingConnection = this.pendingConnections.get(key);
+    if (existingConnection) {
+      await existingConnection;
+      return;
+    }
     const config = this.getConfig(key);
     const client = new Client();
-    await new Promise<void>(async (resolve, reject) => {
+    const connectionPromise = new Promise<void>(async (resolve, reject) => {
       client.on("ready", () => {
         this.connected.set(key, true);
         Logger.log(
@@ -91,7 +117,13 @@ export class SSHConnectionManager {
         resolve();
 
         // 延迟执行系统状态收集，避免与用户的第一个命令竞争 SSH 通道
-        setTimeout(() => {
+        const existingStatusCollection = this.pendingStatusCollections.get(key);
+        if (existingStatusCollection) {
+          clearTimeout(existingStatusCollection);
+        }
+
+        const timeoutId = setTimeout(() => {
+          this.pendingStatusCollections.delete(key);
           collectSystemStatus(client, key)
             .then((status) => {
               this.statusCache.set(key, status);
@@ -109,13 +141,23 @@ export class SSHConnectionManager {
               });
             });
         }, 1000); // 延迟 1 秒，确保用户命令有足够的时间窗口
+
+        this.pendingStatusCollections.set(key, timeoutId);
       });
       client.on("error", (err: Error) => {
         this.connected.set(key, false);
-        reject(new Error(`SSH connection [${key}] failed: ${err.message}`));
+        reject(
+          new ToolError(
+            "SSH_CONNECTION_FAILED",
+            `SSH connection [${key}] failed: ${err.message}`,
+            true,
+          ),
+        );
       });
       client.on("close", () => {
         this.connected.set(key, false);
+        this.clients.delete(key);
+        this.pendingConnections.delete(key);
         Logger.log(`SSH connection [${key}] closed`, "info");
       });
       const sshConfig: any = {
@@ -161,10 +203,12 @@ export class SSHConnectionManager {
           );
         } catch (err) {
           return reject(
-            new Error(
+            new ToolError(
+              "SSH_CONNECTION_FAILED",
               `Failed to create SOCKS proxy connection for [${key}]: ${
                 (err as Error).message
               }`,
+              true,
             ),
           );
         }
@@ -184,10 +228,12 @@ export class SSHConnectionManager {
           );
         } catch (err) {
           return reject(
-            new Error(
+            new ToolError(
+              "LOCAL_FILE_READ_FAILED",
               `Failed to read private key file for [${key}]: ${
                 (err as Error).message
               }`,
+              false,
             ),
           );
         }
@@ -196,14 +242,23 @@ export class SSHConnectionManager {
         Logger.log(`Using password authentication for [${key}]`, "info");
       } else {
         return reject(
-          new Error(
+          new ToolError(
+            "SSH_AUTHENTICATION_MISSING",
             `No valid authentication method provided for [${key}] (agent, password or private key)`,
+            false,
           ),
         );
       }
       client.connect(sshConfig);
     });
-    this.clients.set(key, client);
+    this.pendingConnections.set(key, connectionPromise);
+
+    try {
+      await connectionPromise;
+      this.clients.set(key, client);
+    } finally {
+      this.pendingConnections.delete(key);
+    }
   }
 
   /**
@@ -234,17 +289,37 @@ export class SSHConnectionManager {
     return client;
   }
 
+  private compilePatterns(
+    patterns: string[] | undefined,
+    connectionName: string,
+    kind: "whitelist" | "blacklist",
+  ): RegExp[] {
+    if (!patterns || patterns.length === 0) {
+      return [];
+    }
+
+    return patterns.map((pattern) => {
+      try {
+        return new RegExp(pattern);
+      } catch (error) {
+        throw new Error(
+          `Invalid ${kind} pattern for '${connectionName}': ${pattern} (${(error as Error).message})`,
+        );
+      }
+    });
+  }
+
   private validateCommand(
     command: string,
     name?: string,
   ): { isAllowed: boolean; reason?: string } {
-    const config = this.getConfig(name);
+    const key = name || this.defaultName;
     // Check whitelist (if whitelist is configured, command must match one of the patterns to be allowed)
-    if (config.commandWhitelist && config.commandWhitelist.length > 0) {
-      const matchesWhitelist = config.commandWhitelist.some((pattern) => {
-        const regex = new RegExp(pattern);
-        return regex.test(command);
-      });
+    const whitelistRegexes = this.commandWhitelistRegexes.get(key) || [];
+    if (whitelistRegexes.length > 0) {
+      const matchesWhitelist = whitelistRegexes.some((regex) =>
+        regex.test(command),
+      );
       if (!matchesWhitelist) {
         return {
           isAllowed: false,
@@ -253,11 +328,11 @@ export class SSHConnectionManager {
       }
     }
     // Check blacklist (if command matches any pattern in blacklist, execution is forbidden)
-    if (config.commandBlacklist && config.commandBlacklist.length > 0) {
-      const matchesBlacklist = config.commandBlacklist.some((pattern) => {
-        const regex = new RegExp(pattern);
-        return regex.test(command);
-      });
+    const blacklistRegexes = this.commandBlacklistRegexes.get(key) || [];
+    if (blacklistRegexes.length > 0) {
+      const matchesBlacklist = blacklistRegexes.some((regex) =>
+        regex.test(command),
+      );
       if (matchesBlacklist) {
         return {
           isAllowed: false,
@@ -310,7 +385,11 @@ export class SSHConnectionManager {
     // Validate command input and security
     const validationResult = this.validateCommand(cmdString, name);
     if (!validationResult.isAllowed) {
-      throw new Error(`Command validation failed: ${validationResult.reason}`);
+      throw new ToolError(
+        "COMMAND_VALIDATION_FAILED",
+        `Command validation failed: ${validationResult.reason}`,
+        false,
+      );
     }
 
     // Ensure SSH connection is established
@@ -346,7 +425,13 @@ export class SSHConnectionManager {
           // Handle immediate execution errors
           if (err) {
             cleanup();
-            reject(new Error(`Command execution error: ${err.message}`));
+            reject(
+              new ToolError(
+                "COMMAND_EXECUTION_ERROR",
+                `Command execution error: ${err.message}`,
+                true,
+              ),
+            );
             return;
           }
 
@@ -396,7 +481,8 @@ export class SSHConnectionManager {
 
             if (hasNonZeroExitCode || hasExitSignal) {
               reject(
-                new Error(
+                new ToolError(
+                  "COMMAND_EXECUTION_ERROR",
                   this.formatCommandFailure(
                     stdout,
                     stderr,
@@ -408,6 +494,7 @@ export class SSHConnectionManager {
                           exitCode !== undefined ? ` (exit code ${exitCode})` : ""
                         }`
                       : `Command failed with exit code ${exitCode}`),
+                  false,
                 ),
               );
               return;
@@ -420,7 +507,13 @@ export class SSHConnectionManager {
           stream.on("error", (err: Error) => {
             cleanup();
             settled = true;
-            reject(new Error(`Stream error: ${err.message}`));
+            reject(
+              new ToolError(
+                "COMMAND_EXECUTION_ERROR",
+                `Stream error: ${err.message}`,
+                true,
+              ),
+            );
           });
 
           // Set timeout for command execution
@@ -437,13 +530,15 @@ export class SSHConnectionManager {
               const stdout = data.trimEnd();
               const stderr = errorData.trimEnd();
               reject(
-                new Error(
+                new ToolError(
+                  "COMMAND_TIMEOUT",
                   [
                     this.formatCommandFailure(stdout, stderr),
                     `[timeout] Command timed out after ${timeout}ms`,
                   ]
                     .filter(Boolean)
                     .join("\n"),
+                  true,
                 ),
               );
             }
@@ -458,10 +553,25 @@ export class SSHConnectionManager {
    */
   private validateLocalPath(localPath: string): string {
     const resolvedPath = path.resolve(localPath);
-    const workingDir = process.cwd();
-    if (!resolvedPath.startsWith(workingDir)) {
-      throw new Error(
-        `Path traversal detected. Local path must be within the working directory.`,
+    const allowedRoots = new Set<string>([process.cwd()]);
+
+    for (const config of Object.values(this.configs)) {
+      for (const allowedPath of config.allowedLocalPaths || []) {
+        allowedRoots.add(path.resolve(allowedPath));
+      }
+    }
+
+    const isAllowed = Array.from(allowedRoots).some(
+      (allowedRoot) =>
+        resolvedPath === allowedRoot ||
+        resolvedPath.startsWith(`${allowedRoot}${path.sep}`),
+    );
+
+    if (!isAllowed) {
+      throw new ToolError(
+        "LOCAL_PATH_NOT_ALLOWED",
+        "Path traversal detected. Local path must be within the working directory or configured allowed local paths.",
+        false,
       );
     }
     return resolvedPath;
@@ -481,7 +591,13 @@ export class SSHConnectionManager {
     return new Promise<string>((resolve, reject) => {
       client.sftp((err: Error | undefined, sftp: SFTPWrapper) => {
         if (err) {
-          return reject(new Error(`SFTP connection failed: ${err.message}`));
+          return reject(
+            new ToolError(
+              "SFTP_ERROR",
+              `SFTP connection failed: ${err.message}`,
+              true,
+            ),
+          );
         }
 
         const readStream = fs.createReadStream(validatedLocalPath);
@@ -498,12 +614,20 @@ export class SSHConnectionManager {
 
         writeStream.on("error", (err: Error) => {
           cleanup();
-          reject(new Error(`File upload failed: ${err.message}`));
+          reject(
+            new ToolError("SFTP_ERROR", `File upload failed: ${err.message}`, true),
+          );
         });
 
         readStream.on("error", (err: Error) => {
           cleanup();
-          reject(new Error(`Failed to read local file: ${err.message}`));
+          reject(
+            new ToolError(
+              "LOCAL_FILE_READ_FAILED",
+              `Failed to read local file: ${err.message}`,
+              false,
+            ),
+          );
         });
 
         readStream.pipe(writeStream);
@@ -525,7 +649,13 @@ export class SSHConnectionManager {
     return new Promise<string>((resolve, reject) => {
       client.sftp((err: Error | undefined, sftp: SFTPWrapper) => {
         if (err) {
-          return reject(new Error(`SFTP connection failed: ${err.message}`));
+          return reject(
+            new ToolError(
+              "SFTP_ERROR",
+              `SFTP connection failed: ${err.message}`,
+              true,
+            ),
+          );
         }
 
         const readStream = sftp.createReadStream(remotePath);
@@ -542,12 +672,24 @@ export class SSHConnectionManager {
 
         writeStream.on("error", (err: Error) => {
           cleanup();
-          reject(new Error(`Failed to save file: ${err.message}`));
+          reject(
+            new ToolError(
+              "LOCAL_FILE_WRITE_FAILED",
+              `Failed to save file: ${err.message}`,
+              false,
+            ),
+          );
         });
 
         readStream.on("error", (err: Error) => {
           cleanup();
-          reject(new Error(`File download failed: ${err.message}`));
+          reject(
+            new ToolError(
+              "SFTP_ERROR",
+              `File download failed: ${err.message}`,
+              true,
+            ),
+          );
         });
 
         readStream.pipe(writeStream);
@@ -559,12 +701,23 @@ export class SSHConnectionManager {
    * Disconnect SSH connection
    */
   public disconnect(): void {
+    for (const timeoutId of this.pendingStatusCollections.values()) {
+      clearTimeout(timeoutId);
+    }
+    this.pendingStatusCollections.clear();
+
     if (this.clients.size > 0) {
       for (const client of this.clients.values()) {
         client.end();
       }
       this.clients.clear();
     }
+
+    this.connected.clear();
+    this.statusCache.clear();
+    this.pendingConnections.clear();
+    this.commandWhitelistRegexes.clear();
+    this.commandBlacklistRegexes.clear();
   }
 
   /**

@@ -12,6 +12,7 @@ import { SERVER_CONFIG } from "../config/server.js";
 export class SshMcpServer {
   private server: McpServer;
   private sshManager: SSHConnectionManager;
+  private shutdownHandlersRegistered = false;
 
   constructor() {
     this.server = new McpServer(SERVER_CONFIG);
@@ -26,6 +27,23 @@ export class SshMcpServer {
     registerAllTools(this.server);
   }
 
+  private registerShutdownHandlers(): void {
+    if (this.shutdownHandlersRegistered) {
+      return;
+    }
+
+    const handleShutdown = (signal: string) => {
+      Logger.log(`Received ${signal}, disconnecting SSH clients...`, "info");
+      this.sshManager.disconnect();
+    };
+
+    process.once("SIGINT", () => handleShutdown("SIGINT"));
+    process.once("SIGTERM", () => handleShutdown("SIGTERM"));
+    process.once("beforeExit", () => handleShutdown("beforeExit"));
+
+    this.shutdownHandlersRegistered = true;
+  }
+
   /**
    * Run the server
    */
@@ -33,6 +51,7 @@ export class SshMcpServer {
     // Initialize SSH configuration
     const parsedArgs = CommandLineParser.parseArgs();
     this.sshManager.setConfig(parsedArgs.configs);
+    this.registerShutdownHandlers();
 
     // Security warning
     const allConfigs = Object.values(parsedArgs.configs);

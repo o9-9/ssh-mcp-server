@@ -8,6 +8,25 @@ import { lookupSshConfig } from "../utils/ssh-config-parser.js";
  * Command line argument parser class
  */
 export class CommandLineParser {
+  private static parseBoolean(value: unknown): boolean | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === "true") {
+        return true;
+      }
+      if (normalized === "false") {
+        return false;
+      }
+    }
+    return Boolean(value);
+  }
+
   /**
    * Parse command line arguments
    */
@@ -29,6 +48,7 @@ export class CommandLineParser {
         whitelist: { type: "string", short: "W" },
         blacklist: { type: "string", short: "B" },
         socksProxy: { type: "string", short: "s" },
+        "allowed-local-paths": { type: "string" },
         pty: { type: "boolean" },
         "pre-connect": { type: "boolean" },
       },
@@ -130,6 +150,7 @@ export class CommandLineParser {
       const passphrase = values.passphrase || process.env.SSH_MCP_PASSPHRASE;
       const whitelist = values.whitelist;
       const blacklist = values.blacklist;
+      const allowedLocalPaths = values["allowed-local-paths"];
       const pty = values.pty;
 
       // 实际连接地址：优先使用 SSH config 的 HostName
@@ -167,6 +188,12 @@ export class CommandLineParser {
           ? blacklist
               .split(",")
               .map((pattern) => pattern.trim())
+              .filter(Boolean)
+          : undefined,
+        allowedLocalPaths: allowedLocalPaths
+          ? allowedLocalPaths
+              .split(",")
+              .map((allowedPath) => path.resolve(allowedPath.trim()))
               .filter(Boolean)
           : undefined,
       };
@@ -215,7 +242,7 @@ export class CommandLineParser {
       passphrase: conf.passphrase || process.env.SSH_MCP_PASSPHRASE,
       agent: conf.agent,
       socksProxy: conf.socksProxy,
-      pty: conf.pty !== undefined ? conf.pty === "true" || conf.pty === true : undefined,
+      pty: this.parseBoolean(conf.pty),
       commandWhitelist: conf.whitelist
         ? conf.whitelist
             .split("|")
@@ -226,6 +253,12 @@ export class CommandLineParser {
         ? conf.blacklist
             .split("|")
             .map((s: string) => s.trim())
+            .filter(Boolean)
+        : undefined,
+      allowedLocalPaths: conf.allowedLocalPaths
+        ? String(conf.allowedLocalPaths)
+            .split("|")
+            .map((allowedPath: string) => path.resolve(allowedPath.trim()))
             .filter(Boolean)
         : undefined,
     };
@@ -254,7 +287,7 @@ export class CommandLineParser {
       passphrase: config.passphrase || process.env.SSH_MCP_PASSPHRASE,
       agent: config.agent,
       socksProxy: config.socksProxy,
-      pty: config.pty !== undefined ? Boolean(config.pty) : undefined,
+      pty: this.parseBoolean(config.pty),
       commandWhitelist: Array.isArray(config.commandWhitelist)
         ? config.commandWhitelist
         : config.whitelist
@@ -269,6 +302,15 @@ export class CommandLineParser {
           ? config.blacklist.split("|").map((s: string) => s.trim()).filter(Boolean)
           : config.blacklist
         : undefined,
+      allowedLocalPaths: Array.isArray(config.allowedLocalPaths)
+        ? config.allowedLocalPaths
+            .map((allowedPath: unknown) => path.resolve(String(allowedPath)))
+        : typeof config.allowedLocalPaths === "string"
+          ? config.allowedLocalPaths
+              .split("|")
+              .map((allowedPath: string) => path.resolve(allowedPath.trim()))
+              .filter(Boolean)
+          : undefined,
     };
   }
 }

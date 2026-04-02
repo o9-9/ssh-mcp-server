@@ -1,6 +1,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
 import { SSHConnectionManager } from '../build/services/ssh-connection-manager.js';
+import { ToolError } from '../build/utils/tool-error.js';
 
 describe('SSH Connection Manager', () => {
   let manager;
@@ -77,6 +78,21 @@ describe('SSH Connection Manager', () => {
         manager.getConfig('nonexistent');
       }, /not set/);
     });
+
+    it('无效的命令正则应在配置阶段抛出错误', () => {
+      assert.throws(() => {
+        manager.setConfig({
+          dev: {
+            name: 'dev',
+            host: '192.168.1.100',
+            port: 22,
+            username: 'devuser',
+            password: 'devpass',
+            commandWhitelist: ['[invalid']
+          }
+        });
+      }, /Invalid whitelist pattern/);
+    });
   });
 
   describe('服务器信息', () => {
@@ -117,6 +133,24 @@ describe('SSH Connection Manager', () => {
       assert.strictEqual(devInfo.host, '192.168.1.100');
       assert.strictEqual(devInfo.port, 2222);
       assert.strictEqual(devInfo.username, 'devuser');
+    });
+
+    it('应允许配置的本地路径用于传输', () => {
+      const configs = {
+        dev: {
+          name: 'dev',
+          host: '192.168.1.100',
+          port: 2222,
+          username: 'devuser',
+          password: 'devpass',
+          allowedLocalPaths: ['/tmp']
+        }
+      };
+
+      manager.setConfig(configs);
+
+      assert.throws(() => manager['validateLocalPath']('/etc/passwd'), ToolError);
+      assert.strictEqual(manager['validateLocalPath']('/tmp/test.txt'), '/tmp/test.txt');
     });
   });
 

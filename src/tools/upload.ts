@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { SSHConnectionManager } from "../services/ssh-connection-manager.js";
 import { Logger } from "../utils/logger.js";
+import { toToolError } from "../utils/tool-error.js";
 
 /**
  * Register file upload tool
@@ -26,9 +27,21 @@ export function registerUploadTool(server: McpServer): void {
           content: [{ type: "text", text: result }],
         };
       } catch (error: unknown) {
-        const errorMessage = Logger.handleError(error, "Failed to upload file");
+        const toolError = toToolError(error, "UNKNOWN_ERROR");
+        Logger.handleError(toolError, "Failed to upload file");
         return {
-          content: [{ type: "text", text: errorMessage }],
+          content: [{
+            type: "text",
+            text: JSON.stringify(
+              {
+                code: toolError.code,
+                message: toolError.message,
+                retriable: toolError.retriable,
+              },
+              null,
+              2,
+            ),
+          }],
           isError: true,
         };
       }
